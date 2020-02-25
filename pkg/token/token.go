@@ -24,6 +24,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -214,6 +216,25 @@ func (g generator) GetWithRoleForSession(clusterID string, roleARN string, sess 
 
 // StdinStderrTokenProvider gets MFA token from standard input.
 func StdinStderrTokenProvider() (string, error) {
+	mfa_token := []string{
+		"oathtool",
+		"goathtool",
+	}
+	secretPath := filepath.Join(os.Getenv("HOME"), ".aws", "secret")
+	for _, provider := range mfa_token {
+		if _, err := exec.LookPath(provider); err == nil {
+			if b, err := ioutil.ReadFile(secretPath); err == nil {
+				re, err := regexp.Compile("[^0-9]+")
+				if err != nil {
+					return "", err
+				}
+				cmd := exec.Command("goathtool", "totp", "-b", string(b))
+				if code, err := cmd.CombinedOutput(); err == nil {
+					return re.ReplaceAllString(string(code), ""), nil
+				}
+			}
+		}
+	}
 	var v string
 	fmt.Fprint(os.Stderr, "Assume Role MFA token code: ")
 	_, err := fmt.Scanln(&v)
