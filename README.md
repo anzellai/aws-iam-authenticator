@@ -82,17 +82,54 @@ You may also need to restart the kubelet daemon on your master node to pick up t
 systemctl restart kubelet.service
 ```
 
-### Configure IAMIdentityMapping Custom Resource Definitions
+### 4. Create IAM role/user to kubernetes user/group mappings
+The default behavior of the server is to source mappings exclusively from the
+`mapUsers` and `mapRoles` fields of its configuration file. See [Full
+Configuration Format](#full-configuration-format) below for details.
 
-In the `master` version of the AWS IAM Authenticator you can configure your users using one of three methods. The `mapUsers` and `mapRoles` as seen in the [Full Configuration Format](#full-configuration-format), using the new (alpha) [Kubernetes Custom Resource Definitions](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/), or using an [EKS aws-auth ConfigMap](https://docs.aws.amazon.com/eks/latest/userguide/add-user-role.html). The `--backend-mode` flag determines which of these methods is enabled and their order of precedence (first match wins). The CRD and ConfigMap allow the authenticator server to update its IAM identity mappings without restarting. See [Issues #79](https://github.com/kubernetes-sigs/aws-iam-authenticator/issues/79) for more details.
+Using the `--backend-mode` flag, you can configure the server to source
+mappings from two additional backends: an EKS-style ConfigMap
+(`--backend-mode=EKSConfigMap`) or `IAMIdentityMapping` custom resources
+(`--backend-mode=CRD`). The default backend, the server configuration file
+that's mounted by the server pod, corresponds to `--backend-mode=MountedFile`.
 
-To setup an `IAMIdentityMapping` CRD you'll first need to `apply` the CRD manifest:
+You can pass a comma-separated list of these backends to have the server search
+them in order. For example, with `--backend-mode=EKSConfigMap,MountedFile`, the
+server will search the EKS-style ConfigMap for mappings then, if it doesn't
+find a mapping for the given IAM role/user, the server configuration file. If a
+mapping for the same IAM role/user exists in multiple backends, the server will
+use the mapping in the backend that occurs first in the comma-separated list.
+In this example, if a mapping is found in the EKS ConfigMap then it will be
+used whether or not a duplicate or conflicting mapping exists in the server
+configuration file.
+
+Note that when setting a single backend, the server will *only* source from
+that one and ignore the others even if they exist. For example, with
+`--backend-mode=CRD`, the server will *only* source from `IAMIdentityMappings`
+and ignore the mounted file and EKS ConfigMap.
+
+#### `MountedFile`
+This is the default backend of mappings and sufficient for most users. See
+[Full Configuration Format](#full-configuration-format) below for details.
+
+#### `CRD` (alpha)
+This backend models each IAM mapping as an `IAMIdentityMapping` [Kubernetes
+Custom
+Resource](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/).
+This approach enables you to maintain mappings in a Kubernetes-native way using
+kubectl or the API. Plus, syntax errors (like misaligned YAML) can be more
+easily caught and won't affect all mappings.
+
+To setup an `IAMIdentityMapping` CRD you'll first need to `apply` the CRD
+manifest:
 
 ```
 kubectl apply -f deploy/iamidentitymapping.yaml
 ```
 
-With the CRDs deployed you can then create Custom Resources which model your IAM Identities see [`./deploy/example-iamidentitymapping.yaml`](deploy/example-iamidentitymapping.yaml) :
+With the CRDs deployed you can then create Custom Resources which model your
+IAM Identities. See
+[`./deploy/example-iamidentitymapping.yaml`](deploy/example-iamidentitymapping.yaml):
 
 ```
 ---
@@ -113,7 +150,15 @@ spec:
   - system:masters
 ```
 
-### 4. Set up kubectl to use authentication tokens provided by AWS IAM Authenticator for Kubernetes
+#### `EKSConfigMap`
+The EKS-style `kube-system/aws-auth` ConfigMap serves as the backend. The
+ConfigMap is expected to be in exactly the same format as in EKS clusters:
+https://docs.aws.amazon.com/eks/latest/userguide/add-user-role.html. This is
+useful if you're migrating from/to EKS and want to keep your mappings, or are
+running EKS in addition to some other AWS cluster(s) and want to have the same
+mappings in each.
+
+### 5. Set up kubectl to use authentication tokens provided by AWS IAM Authenticator for Kubernetes
 
 > This requires a 1.10+ `kubectl` binary to work. If you receive `Please enter Username:` when trying to use `kubectl` you need to update to the latest `kubectl`
 
@@ -243,13 +288,13 @@ as a user could potentially change this on the client side.
 
 ## API Authorization from Outside a Cluster
 
-It is possible to make requests to the Kubernetes API from a client that is outside the cluster, be that using the 
-bare Kubernetes REST API or from one of the language specific Kubernetes clients 
+It is possible to make requests to the Kubernetes API from a client that is outside the cluster, be that using the
+bare Kubernetes REST API or from one of the language specific Kubernetes clients
 (e.g., [Python](https://github.com/kubernetes-client/python)). In order to do so, you must create a bearer token that
-is included with the request to the API. This bearer token requires you append the string `k8s-aws-v1.` with a 
-base64 encoded string of a signed HTTP request to the STS GetCallerIdentity Query API. This is then sent it in the 
-`Authorization`  header of the request.  Something to note though is that the IAM Authenticator explicitly omits 
-base64 padding to avoid any `=` characters thus guaranteeing a string safe to use in URLs. Below is an example in 
+is included with the request to the API. This bearer token requires you append the string `k8s-aws-v1.` with a
+base64 encoded string of a signed HTTP request to the STS GetCallerIdentity Query API. This is then sent it in the
+`Authorization`  header of the request.  Something to note though is that the IAM Authenticator explicitly omits
+base64 padding to avoid any `=` characters thus guaranteeing a string safe to use in URLs. Below is an example in
 Python on how this token would be constructed:
 
 ```python
@@ -295,7 +340,7 @@ def get_bearer_token(cluster_id, region):
 
     # remove any base64 encoding padding:
     return 'k8s-aws-v1.' + re.sub(r'=*', '', base64_url)
-    
+
 # If making a HTTP request you would create the authorization headers as follows:
 
 headers = {'Authorization': 'Bearer ' + get_bearer_token('my_cluster', 'us-east-1')}
@@ -349,10 +394,18 @@ server:
   # role to assume before querying EC2 API in order to discover metadata like EC2 private DNS Name
   ec2DescribeInstancesRoleARN: arn:aws:iam::000000000000:role/DescribeInstancesRole
 
+  # AWS Account IDs to scrub from server logs. (Defaults to empty list)
+  scrubbedAccounts:
+  - "111122223333"
+  - "222233334444"
+
   # each mapRoles entry maps an IAM role to a username and set of groups
   # Each username and group can optionally contain template parameters:
   #  1) "{{AccountID}}" is the 12 digit AWS ID.
-  #  2) "{{SessionName}}" is the role session name.
+  #  2) "{{SessionName}}" is the role session name, with `@` characters
+  #     transliterated to `-` characters.
+  #  3) "{{SessionNameRaw}}" is the role session name, without character
+  #     transliteration (available in version >= 0.5).
   mapRoles:
   # statically map arn:aws:iam::000000000000:role/KubernetesAdmin to cluster admin
   - roleARN: arn:aws:iam::000000000000:role/KubernetesAdmin
@@ -392,6 +445,17 @@ server:
     groups:
     - system:masters
 
+  # map federated users in my "KubernetesOtherAdmin" role to users like
+  # "alice-example.com". The SessionName is an arbitrary role name
+  # like an e-mail address passed by the identity provider. Note that if this
+  # role is assumed directly by an IAM User (not via federation), the user
+  # can control the SessionName.  Note that the "{{SessionName}}" macro is
+  # quoted to ensure it is properly parsed as a string.
+  - roleARN: arn:aws:iam::000000000000:role/KubernetesOtherAdmin
+    username: "{{SessionName}}"
+    groups:
+    - system:masters
+
   # each mapUsers entry maps an IAM role to a static username and set of groups
   mapUsers:
   # map user IAM user Alice in 000000000000 to user "alice" in group "system:masters"
@@ -407,6 +471,9 @@ server:
   - "012345678901"
   - "456789012345"
 
+  # source mappings from this file (mapUsers, mapRoles, & mapAccounts)
+  backendMode:
+  - MountedFile
 ```
 
 ## Community, discussion, contribution, and support

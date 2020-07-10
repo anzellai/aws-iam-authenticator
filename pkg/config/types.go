@@ -107,6 +107,10 @@ type Config struct {
 	// IAM ARN from these accounts automatically maps to the Kubernetes username.
 	AutoMappedAWSAccounts []string
 
+	// ScrubbedAWSAccounts is a list of AWS accounts that the role ARNs and uids
+	// are scrubbed from server log statements
+	ScrubbedAWSAccounts []string
+
 	// ServerEC2DescribeInstancesRoleARN is an optional AWS Resource Name for an IAM Role to be assumed
 	// before calling ec2:DescribeInstances to determine the private DNS of the calling kubelet (EC2 Instance).
 	// If nil, defaults to using the IAM Role attached to the instance where aws-iam-authenticator is
@@ -126,7 +130,7 @@ type Config struct {
 	// +optional
 	Kubeconfig string
 
-	// BackendMode is an ordered list of backends to get mappings from. Comma-delimited list of: File,ConfigMap,CRD
+	// BackendMode is an ordered list of backends to get mappings from. Comma-delimited list of: MountedFile,EKSConfigMap,CRD
 	BackendMode []string
 
 	// Ec2 DescribeInstances rate limiting variables initially set to defaults until we completely
